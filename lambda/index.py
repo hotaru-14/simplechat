@@ -10,7 +10,8 @@ def extract_region_from_arn(arn):
     return match.group(1) if match else "us-east-1"
 
 # FastAPI サーバー URL を環境変数から取得
-FASTAPI_URL = os.environ.get("FASTAPI_URL")
+# FASTAPI_URL = os.environ.get("FASTAPI_URL")
+FASTAPI_URL = "***"
 
 def lambda_handler(event, context):
     try:
@@ -27,7 +28,7 @@ def lambda_handler(event, context):
         data = json.dumps(payload).encode('utf-8')
 
         # FastAPI の /generate エンドポイントに POST
-        url = FASTAPI_URL.rstrip('/') + "/gererate"
+        url = FASTAPI_URL.rstrip('/') + "/generate"
         req = urllib.request.Request(
             url=url,
             data=data,
