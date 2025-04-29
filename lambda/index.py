@@ -1,136 +1,92 @@
+# lambda/index.py
+
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 
-# 公開APIのエンドポイントを環境変数から取得（デフォルトは ngrok の公開 URL）
-EXTERNAL_API_URL = os.environ.get(
-    "EXTERNAL_API_URL",
-    "https://****.ngrok-free.app"
-)
+# FastAPI サーバーの公開 URL を環境変数から取得
+FASTAPI_URL = os.environ.get("FASTAPI_URL")  # 例: "https://abcd1234.ngrok.io"
 
 def lambda_handler(event, context):
-    """
-    Lambda ハンドラ
-
-    リクエストボディ例:
-      {
-        "prompt": "string",
-        "max_new_tokens": 512,
-        "do_sample": true,
-        "temperature": 0.7,
-        "top_p": 0.9
-      }
-
-    レスポンス例:
-      {
-        "generated_text": "string",
-        "response_time": 0
-      }
-    """
     try:
-        # リクエストボディのパース
-        body = json.loads(event.get("body", "{}"))
+        # Lambda イベントから body を取得
+        body = json.loads(event.get('body', '{}'))
+        # ユーザー入力（message フィールド）
+        message = body.get('message', '')
+        # 会話履歴
+        conversation_history = body.get('conversationHistory', [])
 
-        # 必須フィールドチェック
-        required = [
-            "prompt",
-            "max_new_tokens",
-            "do_sample",
-            "temperature",
-            "top_p",
-        ]
-        missing = [k for k in required if k not in body]
-        if missing:
-            return {
-                "statusCode": 400,
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({
-                    "success": False,
-                    "error": f"Missing fields: {missing}"
-                })
-            }
-
-        # JSON ボディをバイト列に変換
-        try:
-            payload = json.dumps(body).encode("utf-8")
-        except (TypeError, ValueError) as e:
-            return {
-                "statusCode": 400,
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({
-                    "success": False,
-                    "error": f"Invalid JSON body: {e}"
-                })
-            }
-
-        # urllib.request で外部 API 呼び出し
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
+        # FastAPI /generate エンドポイント向けペイロード
+        payload = {
+            "prompt": message,
+            "max_new_tokens": 1024,
+            "do_sample": True,
+            "temperature": 0.7,
+            "top_p": 0.9
         }
+        data = json.dumps(payload).encode('utf-8')
+
+        # エンドポイント URL
+        url = FASTAPI_URL.rstrip('/') + "/generate"
         req = urllib.request.Request(
-            EXTERNAL_API_URL,
-            data=payload,
-            headers=headers,
-            method="POST"
+            url=url,
+            data=data,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=10) as res:
-                raw = res.read().decode("utf-8")
-                data = json.loads(raw)
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode() if e.fp else e.reason
-            return {
-                "statusCode": e.code,
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({"success": False, "error": f"Upstream HTTPError: {detail}"})
-            }
-        except urllib.error.URLError as e:
-            return {
-                "statusCode": 502,
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({"success": False, "error": f"Upstream URLError: {e.reason}"})
-            }
-        except json.JSONDecodeError:
-            return {
-                "statusCode": 502,
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({"success": False, "error": "Upstream did not return valid JSON"})
-            }
+        # FastAPI サーバーへリクエスト送信
+        with urllib.request.urlopen(req) as resp:
+            resp_text = resp.read().decode('utf-8')
+            result = json.loads(resp_text)
 
-        # レスポンス検証
-        if "generated_text" not in data or "response_time" not in data:
-            return {
-                "statusCode": 502,
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({
-                    "success": False,
-                    "error": "Upstream response missing required fields"
-                })
-            }
+        # レスポンスから generated_text を取り出す
+        if 'generated_text' not in result:
+            raise Exception('FastAPI response missing "generated_text"')
+        generated = result['generated_text']
+        # レスポンスタイムを必要に応じて取得
+        response_time = result.get('response_time')
 
-        # 正常レスポンス
+        # 会話履歴にアシスタントの応答を追加
+        updated_history = conversation_history + [{
+            "role": "assistant",
+            "content": generated.strip()
+        }]
+
+        # Lambda レスポンスを構築
+        response_payload = {
+            "generated_text": generated,
+            "response_time": response_time
+        }
+
         return {
             "statusCode": 200,
             "headers": {
                 "Content-Type": "application/json",
                 "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "OPTIONS,POST",
-                "Access-Control-Allow-Headers": "Content-Type"
+                "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
+                "Access-Control-Allow-Methods": "OPTIONS,POST"
             },
-            "body": json.dumps({
-                "success": True,
-                "generated_text": data["generated_text"],
-                "response_time": data["response_time"]
-            })
+            "body": json.dumps(response_payload)
         }
 
-    except Exception as e:
-        # 予期しないエラー
+    except urllib.error.HTTPError as e:
+        # FastAPI からの HTTP エラー
+        error_msg = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
+        print("HTTPError:", error_msg)
+        return {
+            "statusCode": e.code,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"success": False, "error": error_msg})
+        }
+
+    except Exception as error:
+        # その他の例外
+        print("Error:", str(error))
         return {
             "statusCode": 500,
             "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"success": False, "error": str(e)})
+            "body": json.dumps({"success": False, "error": str(error)})
         }
