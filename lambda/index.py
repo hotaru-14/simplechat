@@ -12,22 +12,22 @@ FASTAPI_URL = os.environ.get("FASTAPI_URL")  # 例: "https://abcd1234.ngrok.io"
 
 def lambda_handler(event, context):
     try:
-        # リクエストボディ解析
+        # Lambda イベントから body を取得
         body = json.loads(event.get('body', '{}'))
+        # ユーザー入力（message フィールド）
         message = body.get('message', '')
+        # 会話履歴
         conversation_history = body.get('conversationHistory', [])
 
-        # FastAPI サーバーへ渡すペイロードを作成
+        # FastAPI /generate エンドポイント向けペイロード
         payload = {
-            "message": message,
+            "prompt": message,
             "conversationHistory": conversation_history
         }
         data = json.dumps(payload).encode('utf-8')
 
-        # /generate エンドポイントへの完全な URL を組み立て
+        # エンドポイント URL
         url = FASTAPI_URL.rstrip('/') + "/generate"
-
-        # HTTP リクエストを構築
         req = urllib.request.Request(
             url=url,
             data=data,
@@ -35,20 +35,34 @@ def lambda_handler(event, context):
             method='POST'
         )
 
-        # FastAPI サーバーにリクエスト送信＆レスポンス受信
+        # FastAPI サーバーへリクエスト送信
         with urllib.request.urlopen(req) as resp:
-            resp_body = resp.read().decode('utf-8')
-            result = json.loads(resp_body)
+            resp_text = resp.read().decode('utf-8')
+            result = json.loads(resp_text)
 
-        # サーバー側で success=False だった場合は例外に
-        if not result.get('success'):
-            raise Exception(result.get('error', 'Inference failed'))
+        # レスポンスから generated_text を取り出す
+        if 'generated_text' not in result:
+            raise Exception('FastAPI response missing "generated_text"')
+        generated = result['generated_text']
+        # レスポンスタイムを必要に応じて取得
+        response_time = result.get('response_time')
 
-        # 推論結果と更新後の会話履歴を取得
-        assistant_response = result['response']
-        updated_history = result.get('conversationHistory', [])
+        # 会話履歴にアシスタントの応答を追加
+        updated_history = conversation_history + [{
+            "role": "assistant",
+            "content": generated.strip()
+        }]
 
-        # Lambda の成功レスポンス形式で返却
+        # Lambda レスポンスを構築
+        response_payload = {
+            "success": True,
+            "response": generated,
+            "conversationHistory": updated_history
+        }
+        # レスポンス時間があれば追加
+        if response_time is not None:
+            response_payload['response_time'] = response_time
+
         return {
             "statusCode": 200,
             "headers": {
@@ -57,16 +71,12 @@ def lambda_handler(event, context):
                 "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
                 "Access-Control-Allow-Methods": "OPTIONS,POST"
             },
-            "body": json.dumps({
-                "success": True,
-                "response": assistant_response,
-                "conversationHistory": updated_history
-            })
+            "body": json.dumps(response_payload)
         }
 
     except urllib.error.HTTPError as e:
-        # FastAPI からの HTTP エラーをキャッチ
-        error_msg = e.read().decode() if hasattr(e, 'read') else str(e)
+        # FastAPI からの HTTP エラー
+        error_msg = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
         print("HTTPError:", error_msg)
         return {
             "statusCode": e.code,
@@ -75,7 +85,7 @@ def lambda_handler(event, context):
         }
 
     except Exception as error:
-        # その他の例外をキャッチ
+        # その他の例外
         print("Error:", str(error))
         return {
             "statusCode": 500,
