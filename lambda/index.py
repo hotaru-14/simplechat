@@ -29,7 +29,7 @@ def lambda_handler(event, context):
 
         # HTTP リクエスト作成
         req = urllib.request.Request(
-            url=f"{fastapi_url}/predict",
+            url=f"{fastapi_url}/generate",
             data=data,
             headers={
                 'Content-Type': 'application/json'
