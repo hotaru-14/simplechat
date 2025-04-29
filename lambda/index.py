@@ -1,67 +1,80 @@
-# lambda/index.py
-
-import json
 import os
-import re
-import urllib.request
-import urllib.error
+import json
+import time
+import requests
 
 # FastAPI サーバーの公開 URL を環境変数から取得
 FASTAPI_URL = os.environ.get("FASTAPI_URL")  # 例: "https://abcd1234.ngrok.io"
 
+# グローバルにセッションを張っておくとコネクション再利用されて高速化
+session = requests.Session()
 
 def lambda_handler(event, context):
     try:
-        # Lambda イベントから body を取得
-        body = json.loads(event.get('body', '{}'))
-        # ユーザー入力（message フィールド）
-        message = body.get('message', '')
-        # 会話履歴
+        # Cognito で認証されたユーザー情報（任意でログに出す）
+        if 'requestContext' in event and 'authorizer' in event['requestContext']:
+            claims = event['requestContext']['authorizer']['claims']
+            user = claims.get('email') or claims.get('cognito:username')
+            print(f"Authenticated user: {user}")
+
+        # リクエストボディ解析
+        body = json.loads(event['body'])
+        message = body['message']
         conversation_history = body.get('conversationHistory', [])
 
-        # FastAPI /generate エンドポイント向けペイロード
+        print("Received message:", message)
+
+        # FastAPI generate エンドポイント用ペイロード
         payload = {
             "prompt": message,
-            "conversationHistory": conversation_history
+            "conversationHistory": conversation_history,
+            # 必要に応じてチューニングパラメータを追加できます
+            "max_new_tokens": body.get("max_new_tokens", 512),
+            "temperature":      body.get("temperature", 0.7),
+            "top_p":            body.get("top_p", 0.9),
+            "do_sample":        body.get("do_sample", True)
         }
-        data = json.dumps(payload).encode('utf-8')
 
-        # エンドポイント URL
+        # エンドポイント URL を組み立て
         url = FASTAPI_URL.rstrip('/') + "/generate"
-        req = urllib.request.Request(
-            url=url,
-            data=data,
-            headers={'Content-Type': 'application/json'},
-            method='POST'
+        print(f"Calling FastAPI at {url} with payload: {payload}")
+
+        # 呼び出し前にタイムスタンプ
+        start_time = time.time()
+
+        resp = session.post(
+            url,
+            json=payload,
+            timeout=10  # 必要に応じてタイムアウトを設定
         )
+        resp.raise_for_status()
 
-        # FastAPI サーバーへリクエスト送信
-        with urllib.request.urlopen(req) as resp:
-            resp_text = resp.read().decode('utf-8')
-            result = json.loads(resp_text)
+        # 呼び出し後の経過時間
+        total_request_time = time.time() - start_time
+        result = resp.json()
 
-        # レスポンスから generated_text を取り出す
-        if 'generated_text' not in result:
-            raise Exception('FastAPI response missing "generated_text"')
-        generated = result['generated_text']
-        # レスポンスタイムを必要に応じて取得
-        response_time = result.get('response_time')
+        # 必須フィールドのチェック
+        if "generated_text" not in result:
+            raise ValueError('FastAPI response missing "generated_text"')
 
-        # 会話履歴にアシスタントの応答を追加
+        generated = result["generated_text"]
+        api_process_time = result.get("response_time")
+
+        # 会話履歴に追加
         updated_history = conversation_history + [{
             "role": "assistant",
             "content": generated.strip()
         }]
 
-        # Lambda レスポンスを構築
+        # Lambda 結果ペイロード
         response_payload = {
             "success": True,
             "response": generated,
-            "conversationHistory": updated_history
+            "conversationHistory": updated_history,
+            "total_request_time": total_request_time
         }
-        # レスポンス時間があれば追加
-        if response_time is not None:
-            response_payload['response_time'] = response_time
+        if api_process_time is not None:
+            response_payload["response_time"] = api_process_time
 
         return {
             "statusCode": 200,
@@ -74,14 +87,15 @@ def lambda_handler(event, context):
             "body": json.dumps(response_payload)
         }
 
-    except urllib.error.HTTPError as e:
-        # FastAPI からの HTTP エラー
-        error_msg = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
-        print("HTTPError:", error_msg)
+    except requests.exceptions.HTTPError as e:
+        # FastAPI からのエラー
+        status = e.response.status_code
+        text   = e.response.text
+        print(f"FastAPI HTTPError {status}: {text}")
         return {
-            "statusCode": e.code,
+            "statusCode": status,
             "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"success": False, "error": error_msg})
+            "body": json.dumps({"success": False, "error": text})
         }
 
     except Exception as error:
