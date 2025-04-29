@@ -15,7 +15,7 @@ def extract_region_from_arn(arn):
     return "us-east-1"  # デフォルト値
 
 # グローバル変数としてクライアントを初期化（初期値）
-bedrock_client = https://5a83-34-143-196-229.ngrok-free.app
+bedrock_client = https://5a83-34-143-196-229.ngrok-free.app/generate
 
 # モデルID
 MODEL_ID = os.environ.get("MODEL_ID", "us.amazon.nova-lite-v1:0")
