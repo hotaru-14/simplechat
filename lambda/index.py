@@ -1,5 +1,3 @@
-# lambda/index.py
-
 import json
 import os
 import re
@@ -7,7 +5,7 @@ import urllib.request
 import urllib.error
 
 # FastAPI サーバーの公開 URL を環境変数から取得
-FASTAPI_URL = os.environ.get("FASTAPI_URL")  # 例: "https://abcd1234.ngrok.io"
+FASTAPI_URL = "https://67c5-34-169-222-242.ngrok-free.app/generate"
 
 def lambda_handler(event, context):
     try:
@@ -18,10 +16,14 @@ def lambda_handler(event, context):
         # 会話履歴
         conversation_history = body.get('conversationHistory', [])
 
+        print("body message:", body.get("message"))
+        print("conversation history:", conversation_history)
+
         # FastAPI /generate エンドポイント向けペイロード
         payload = {
             "prompt": message,
-            "max_new_tokens": 1024,
+            "history": conversation_history,
+            "max_new_tokens": 256,
             "do_sample": True,
             "temperature": 0.7,
             "top_p": 0.9
@@ -29,7 +31,7 @@ def lambda_handler(event, context):
         data = json.dumps(payload).encode('utf-8')
 
         # エンドポイント URL
-        url = FASTAPI_URL.rstrip('/') + "/generate"
+        url = FASTAPI_URL
         req = urllib.request.Request(
             url=url,
             data=data,
@@ -57,7 +59,8 @@ def lambda_handler(event, context):
 
         # Lambda レスポンスを構築
         response_payload = {
-            "generated_text": generated,
+            "success": True,
+            "response": generated,
             "response_time": response_time
         }
 
